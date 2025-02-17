@@ -395,11 +395,15 @@ def create_basic_map(data_points, opacity, pre_term_indices=None):
     return sensor_map
 
 def convert_markdown_to_pdf(markdown_text):
-    import markdown
+    """
+    Función modificada para convertir texto a PDF sin utilizar el módulo 'markdown'.
+    Se envuelve el texto en una etiqueta <pre> para preservar el formato.
+    """
     from xhtml2pdf import pisa
     from io import BytesIO
 
-    html = markdown.markdown(markdown_text)
+    # Se asume que el texto recibido es markdown; en lugar de parsearlo, se envuelve en <pre>
+    html_content = f"<pre>{markdown_text}</pre>"
     html = f"""
     <html>
     <head>
@@ -411,24 +415,13 @@ def convert_markdown_to_pdf(markdown_text):
             line-height: 1.5;
             margin: 20px;
         }}
-        h1, h2, h3, h4, h5, h6 {{
-            color: #333;
-        }}
-        table {{
-            border-collapse: collapse;
-            width: 100%;
-        }}
-        th, td {{
-            border: 1px solid #ddd;
-            padding: 8px;
-        }}
-        th {{
-            background-color: #f2f2f2;
+        pre {{
+            white-space: pre-wrap;
         }}
       </style>
     </head>
     <body>
-    {html}
+    {html_content}
     </body>
     </html>
     """
@@ -448,11 +441,9 @@ def compute_slope(series, timestamps):
 
 # ------------------------------------------------------
 # AGREGAR CÁLCULO DE LA TASA DE ANOMALÍAS
-# Para cada sensor numérico, calculamos el porcentaje de valores atípicos en el período retroactivo.
+# ------------------------------------------------------
 def calcular_tasa_anomalias(pre_term_df, sensor):
     count = pre_term_df[sensor].count()
-    # Aquí se asume que "Outliers Retroactivos" ya se calculó y se almacena en sensor_stats_pre.
-    # Como alternativa, se puede recalcular utilizando el método IQR.
     q1 = pre_term_df[sensor].quantile(0.25)
     q3 = pre_term_df[sensor].quantile(0.75)
     iqr = q3 - q1
@@ -642,7 +633,6 @@ with tabs[0]:
         if gemini_enabled:
             include_hypotheses = st.sidebar.checkbox("Incluir hipótesis de falla en el análisis", value=False)
             if st.button("Obtener Análisis Automático con Gemini AI"):
-                # Se especifica que la IA debe presentar la información en formato de lista
                 if include_hypotheses:
                     hypothesis_section = (
                         "3.  **Hipótesis de Falla (Análisis Causal):**\n"
