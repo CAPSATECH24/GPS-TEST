@@ -1,6 +1,7 @@
 import os
 import re
 import math
+import time  # Para las esperas en reintentos
 import streamlit as st
 import pandas as pd
 import folium
@@ -10,6 +11,9 @@ import plotly.express as px
 import datetime  # Para trabajar con objetos time
 import google.generativeai as genai
 import numpy as np
+
+# Para capturar las excepciones de la API de Google
+import google.api_core.exceptions
 
 # ----------------------------
 # CONFIGURACIÓN DE GEMINI AI
@@ -33,6 +37,32 @@ if gemini_api_key:
     gemini_enabled = True
 else:
     st.sidebar.warning("Ingrese su API key de Gemini para habilitar el análisis automático.")
+
+# ------------------------------------------------------
+# Función para reintentar el envío de mensajes
+# ------------------------------------------------------
+def send_message_with_retry(chat_session, message, max_retries=3, delay=5):
+    """
+    Envía un mensaje a la API de Gemini con reintentos en caso de error 429 (ResourceExhausted).
+    - chat_session: objeto de sesión de chat con la API.
+    - message: texto a enviar.
+    - max_retries: número máximo de reintentos.
+    - delay: tiempo de espera (segundos) entre reintentos.
+    """
+    for attempt in range(max_retries):
+        try:
+            response = chat_session.send_message(message)
+            return response
+        except google.api_core.exceptions.ResourceExhausted as e:
+            # Error 429 o relacionado con límites de cuota
+            st.warning(f"Recurso agotado (429). Reintentando en {delay} segundos... (intento {attempt+1}/{max_retries})")
+            time.sleep(delay)
+        except Exception as e:
+            # Otros errores, se propaga la excepción
+            raise e
+
+    # Si se exceden los reintentos, lanzamos el error final
+    raise google.api_core.exceptions.ResourceExhausted("Se ha agotado el número máximo de reintentos a la API de Gemini.")
 
 # ------------------------------------------------------
 # CARGA DE SENSOR MASTER LIST DESDE CSV O EXCEL
@@ -101,7 +131,7 @@ retro_period = st.sidebar.number_input(
 # INFORMACIÓN ADICIONAL DE GPS
 # ------------------------------------------------------
 st.sidebar.header("Información Adicional de GPS")
-gps_knowledge = st.sidebar.text_area(
+gps_info = st.sidebar.text_area(
     "Proporciona aquí información extra sobre el GPS, características, posibles fallas, etc.",
     help="Este texto se usará como conocimiento adicional para la IA."
 )
@@ -402,7 +432,6 @@ def convert_markdown_to_pdf(markdown_text):
     from xhtml2pdf import pisa
     from io import BytesIO
 
-    # Se asume que el texto recibido es markdown; en lugar de parsearlo, se envuelve en <pre>
     html_content = f"<pre>{markdown_text}</pre>"
     html = f"""
     <html>
@@ -439,9 +468,6 @@ def compute_slope(series, timestamps):
     times = np.array([t.timestamp() - t0 for t in timestamps])
     return np.polyfit(times, series, 1)[0]
 
-# ------------------------------------------------------
-# AGREGAR CÁLCULO DE LA TASA DE ANOMALÍAS
-# ------------------------------------------------------
 def calcular_tasa_anomalias(pre_term_df, sensor):
     count = pre_term_df[sensor].count()
     q1 = pre_term_df[sensor].quantile(0.25)
@@ -455,9 +481,9 @@ def calcular_tasa_anomalias(pre_term_df, sensor):
     return round(tasa, 2)
 
 # ------------------------------------------------------
-# ORGANIZACIÓN EN PESTAÑAS: "Análisis" y "Conversación"
+# ORGANIZACIÓN EN PESTAÑAS: "Análisis", "Conversación" y "Historial IA"
 # ------------------------------------------------------
-tabs = st.tabs(["Análisis", "Conversación"])
+tabs = st.tabs(["Análisis", "Conversación", "Historial IA"])
 
 # ------------------- Pestaña de Análisis -------------------
 with tabs[0]:
@@ -630,59 +656,14 @@ with tabs[0]:
             st.subheader("Datos")
             st.dataframe(df)
 
+        # ----------------------- GEMINI AI - Análisis Inicial -----------------------
         if gemini_enabled:
             include_hypotheses = st.sidebar.checkbox("Incluir hipótesis de falla en el análisis", value=False)
             if st.button("Obtener Análisis Automático con Gemini AI"):
-                if include_hypotheses:
-                    hypothesis_section = (
-                        "3.  **Hipótesis de Falla (Análisis Causal):**\n"
-                        "    - Presenta una lista de hipótesis sobre las posibles causas de la interrupción. Para cada hipótesis, menciona brevemente la función de los sensores o componentes técnicos involucrados y explica cómo influyen en el contexto actual analizado.\n\n"
-                    )
-                    prompt = f"""
-Eres un analista de datos experto en sistemas telemáticos y dispositivos GPS. Analiza la información proporcionada para identificar las causas de una interrupción en la transmisión de datos GPS. El análisis debe ser exhaustivo, crítico y proactivo. Sigue esta estructura utilizando listas:
-
-1. **Resumen Ejecutivo (Crítico):**
-   - Resume de forma concisa los hallazgos más relevantes.
-2. **Análisis de Sensores Afectados:**
-   - Para cada sensor, indica:
-       • Sensor Técnico y Sensor Común.
-       • Breve descripción de su función y cómo influye en el contexto actual.
-       • Valores promedio global y en el período retroactivo.
-       • Diferencia de promedios y diferencia mínima.
-       • Tasa de anomalías durante el período (porcentaje de valores atípicos).
-3. {hypothesis_section}
-4. **Recomendaciones (Plan de Acción):**
-   - Proporciona una lista de acciones concretas para verificar las hipótesis planteadas.
-5. **Análisis de Tendencias (Opcional y Avanzado):**
-   - Indica si existen patrones recurrentes en el tiempo relacionados con las anomalías.
-
-Utiliza un lenguaje técnico preciso y accesible.
-"""
-                else:
-                    hypothesis_section = (
-                        "3. **Recomendaciones de Verificación y Acción:**\n"
-                        "   - Presenta una lista de recomendaciones detalladas para identificar la causa de la interrupción. Para cada recomendación, menciona brevemente la función de los sensores o componentes técnicos relevantes y cómo influyen en el análisis.\n\n"
-                    )
-                    prompt = f"""
-Eres un analista de datos experto en sistemas telemáticos y dispositivos GPS. Analiza la información proporcionada para identificar posibles causas de una interrupción en la transmisión de datos GPS. El análisis debe ser exhaustivo, crítico y orientado a recomendaciones prácticas. Sigue esta estructura utilizando listas:
-
-1. **Resumen Ejecutivo (Crítico):**
-   - Resume de forma concisa los hallazgos más relevantes.
-2. **Análisis de Sensores Afectados:**
-   - Para cada sensor, indica:
-       • Sensor Técnico y Sensor Común.
-       • Breve descripción de su función y de cómo influye en el contexto actual.
-       • Valores promedio global y en el período retroactivo.
-       • Diferencia de promedios y diferencia mínima.
-       • Tasa de anomalías durante el período (porcentaje de valores atípicos).
-3. {hypothesis_section}
-4. **Análisis de Tendencias (Opcional y Avanzado):**
-   - Indica si existen patrones recurrentes en el tiempo relacionados con las anomalías.
-
-Utiliza un lenguaje técnico preciso y accesible.
-"""
+                # Se definen las variables gps_info y sensor_info para integrar en el prompt
+                sensor_info = ""
                 if sensor_master_df is not None:
-                    sensor_info = "Listado de sensores:\n• Para cada sensor, menciona Sensor Técnico, Sensor Común, Unidades y una breve descripción de su función y relevancia en el contexto analizado.\n"
+                    sensor_info = "Listado de sensores:\n"
                     for idx, row in sensor_master_df.iterrows():
                         property_id = str(row["Property ID in AVL packet"]).strip()
                         sensor_tecnico = f"io_{property_id}"
@@ -692,35 +673,230 @@ Utiliza un lenguaje técnico preciso y accesible.
                         sensor_info += f"- {sensor_tecnico} | {sensor_comun} | {unidades} | {descripcion}\n"
                 else:
                     sensor_info = "No se proporcionó información adicional de sensores."
-                prompt += f"\n\n**Información Adicional de Sensores:**\n{sensor_info}\n"
+
+                # --- Prompt 1 Modificado (Análisis Inicial - Estilo Sherlock Holmes) ---
+                prompt = f"""
+Eres un analista de datos experto en sistemas telemáticos y dispositivos GPS, aplicando el método deductivo de Sherlock Holmes.
+
+**Información Adicional y Contexto (Importante):**
+{gps_info}
+
+Tu objetivo es realizar una **investigación deductiva** para **comprender el comportamiento anómalo** detectado en los datos telemáticos y **determinar la causa más probable** de la interrupción en la transmisión de datos GPS. Aplica el método de Sherlock Holmes: **observación aguda, razonamiento lógico, inducción y generación de hipótesis fundamentadas.**
+
+Sigue esta estructura utilizando listas:
+
+1. **Resumen Ejecutivo (Crítico - Enfoque Deductivo):**
+   - Resume de forma concisa los hallazgos más relevantes desde una perspectiva deductiva. **Identifica las posibles causas más probables de la interrupción, considerando tanto fallas internas como externas/físicas, basándote en la *evidencia inicial* disponible.**
+
+2. **Análisis de Sensores Afectados (Observación Aguda y Detallada):**
+   - Para cada sensor, realiza una **observación aguda y detallada** de su comportamiento en el período retroactivo. No pases por alto ningún detalle, incluso aquellos que parezcan insignificantes al principio. Indica:
+       • Sensor Técnico y Sensor Común.
+       • Breve descripción de su función y cómo influye en el contexto actual.
+       • Valores promedio global y en el período retroactivo (como referencia inicial).
+       • Diferencia de promedios y diferencia mínima (como referencia inicial).
+       • Tasa de anomalías durante el período (porcentaje de valores atípicos - como indicador inicial).
+       **Realiza un análisis profundo de la *evolución temporal* de los datos de cada sensor en el período retroactivo. Responde a las siguientes preguntas clave para una observación detallada:**
+           * "¿Se observa alguna **tendencia específica** en los datos a lo largo del tiempo (aumento gradual, disminución repentina, fluctuaciones erráticas, patrones cíclicos)? Si es así, **describir la tendencia con precisión y el momento exacto en que se manifiesta.**"
+           * "¿Existen **eventos específicos o cambios abruptos** en los valores de los sensores dentro del período retroactivo? **Identificar los momentos clave (fecha y hora en formato legible para humanos, zona horaria America/Mexico_City) y describir los cambios observados con detalle.**"
+           * "¿Existen **correlaciones** entre diferentes sensores? ¿Cambios en un sensor se corresponden con cambios en otros? **Analizar posibles relaciones y dependencias entre los sensores, identificando patrones de comportamiento conjunto.**"
+       **Al analizar los sensores y sus patrones temporales, piensa críticamente en cómo sus valores y *evolución en el tiempo* podrían indicar no solo un problema interno del GPS, sino también problemas de alimentación, conexión física, o factores externos.**
+
+3. **Hipótesis de Falla (Análisis Causal Inductivo - Basado en la Evidencia Observada):**
+   - Basándote en las **observaciones detalladas de los datos** (tendencias, eventos, correlaciones) realizadas en el punto anterior, genera una lista de posibles hipótesis de falla utilizando un enfoque **inductivo**.
+     **Prioriza las hipótesis que mejor se ajusten a la evidencia observada y que expliquen de manera más coherente los patrones de comportamiento detectados en los sensores.**
+     Considera un amplio espectro de posibilidades, incluyendo:
+        * **Problemas de Conexión Física:** Cables, conectores, antena.
+        * **Problemas de Alimentación Eléctrica:** Fuente, batería, cableado.
+        * **Fallas Internas del GPS:** Módulo, procesador, firmware, software.
+        * **Interferencia Externa:** Señal GPS (jamming), bloqueo por entorno.
+        * **Manipulación o Desconexión Intencional:** Cables, desactivación.
+       - **Para cada hipótesis, explica *cómo la evidencia observada* (patrones en los datos de los sensores, tendencias temporales, eventos específicos, correlaciones) *la apoya o la contradice*.** Sé específico en la conexión entre la evidencia y la hipótesis.
+       - **Prioriza las hipótesis según su plausibilidad a la luz de la evidencia observada.**
+
+4. **Recomendaciones (Plan de Acción Inicial - Orientado a la Investigación):**
+   - Proporciona una lista de acciones concretas y **orientadas a la investigación** para **verificar las hipótesis planteadas** en el punto anterior. Las recomendaciones deben ser **lógicas y directamente derivadas de las hipótesis**.
+     Asegúrate de que las recomendaciones incluyan pasos para investigar tanto fallas internas del GPS como problemas de conexión física y alimentación. Por ejemplo:
+        * Inspección visual **detallada** de cables y conectores (buscar signos de daño, desgaste, conexiones sueltas).
+        * Verificación de la alimentación eléctrica **en diferentes puntos del sistema** (fuente, GPS, cables).
+        * Pruebas de continuidad en los cables **específicos** (alimentación, antena, datos).
+        * Revisión **minuciosa** del estado de la antena GPS (posición, integridad física, conexión).
+        * Diagnóstico interno del GPS **si es posible y relevante para las hipótesis.**
+        * **Recopilación de información adicional relevante del contexto operativo** (ej: condiciones ambientales recientes, historial de la unidad, reportes de operadores).
+
+5. **Análisis de Tendencias (Opcional y Avanzado - Patrones Temporales):**
+   - Indica si existen **patrones recurrentes en el *tiempo*** (diarios, semanales, etc.) relacionados con las anomalías o comportamientos inusuales observados.
+     **Considera si estos patrones temporales podrían estar relacionados con factores externos (ej: interferencia en ciertos momentos del día) o problemas de conexión intermitentes (ej: falsos contactos que varían con la vibración o temperatura).** Si se detectan patrones, descríbelos con precisión y propone posibles explicaciones basadas en estos patrones.
+
+**Información Adicional de Sensores:**
+{sensor_info}
+                """
                 if 'chat_session' not in st.session_state:
                     st.session_state['chat_session'] = gemini_model.start_chat(history=[])
                 chat_session = st.session_state['chat_session']
-                response = chat_session.send_message(prompt)
-                analysis_text = response.text
-                st.subheader("Análisis Automático de Gemini AI")
-                st.markdown(analysis_text, unsafe_allow_html=True)
-                pdf_bytes = convert_markdown_to_pdf(analysis_text)
-                if pdf_bytes:
-                    st.download_button("Descargar análisis a PDF", data=pdf_bytes, file_name="analisis_gemini.pdf", mime="application/pdf")
+
+                try:
+                    response = send_message_with_retry(chat_session, prompt, max_retries=3, delay=5)
+                    analysis_text = response.text
+                    st.subheader("Análisis Automático de Gemini AI")
+                    st.markdown(analysis_text, unsafe_allow_html=True)
+                    # Almacenar el primer análisis en session_state para Historial IA
+                    st.session_state['first_analysis'] = analysis_text
+                    pdf_bytes = convert_markdown_to_pdf(analysis_text)
+                    if pdf_bytes:
+                        st.download_button("Descargar análisis a PDF", data=pdf_bytes, file_name="analisis_gemini.pdf", mime="application/pdf")
+                except google.api_core.exceptions.ResourceExhausted as e:
+                    st.error("Se ha excedido la cuota de la API de Gemini (error 429). Intente más tarde o revise su plan.")
+                except Exception as e:
+                    st.error(f"Ha ocurrido un error al enviar el mensaje: {e}")
+
         csv_data = df.to_csv(index=False).encode('utf-8')
         st.download_button("Descargar datos como CSV", csv_data, "datos_sensores.csv", "text/csv", key='download-csv')
 
 # ------------------- Pestaña de Conversación -------------------
 with tabs[1]:
     st.subheader("Conversación Iterativa con Gemini AI")
-    if 'chat_history' not in st.session_state:
-        st.session_state['chat_history'] = []
-    user_input = st.text_input("Escribe tu pregunta o comentario:", key="user_input")
-    if st.button("Enviar mensaje", key="send_button"):
-        if user_input:
-            if 'chat_session' not in st.session_state:
-                st.session_state['chat_session'] = gemini_model.start_chat(history=[])
-            chat_session = st.session_state['chat_session']
-            response = chat_session.send_message(user_input)
-            st.session_state['chat_history'].append({"user": user_input, "ai": response.text})
-    if st.session_state.get('chat_history'):
-        st.markdown("### Historial de Conversación")
-        for exchange in st.session_state['chat_history']:
-            st.markdown(f"**Tú:** {exchange['user']}")
-            st.markdown(f"**AI:** {exchange['ai']}")
+    st.info("Para iniciar la conversación, asegúrate de haber ejecutado ambos análisis (Análisis Automático y Veredicto Final Integrado).")
+    # Checkbox opcional para incluir el contexto histórico del archivo de reportes
+    include_file_context = st.checkbox("Incluir contexto histórico de datos del archivo subido en la conversación", value=False)
+    # Mostrar un mensaje si no se han ejecutado ambos análisis
+    if 'first_analysis' not in st.session_state or 'second_analysis' not in st.session_state:
+        st.warning("Aún no se han ejecutado ambos análisis. Ejecuta primero el Análisis Automático y luego el Veredicto Final Integrado para habilitar la conversación.")
+    else:
+        if 'chat_history' not in st.session_state:
+            st.session_state['chat_history'] = []
+        user_input = st.text_input("Escribe tu pregunta o comentario:", key="user_input")
+        if st.button("Enviar mensaje", key="send_button"):
+            if user_input:
+                # Si se seleccionó incluir el contexto histórico y se dispone del archivo, se agrega esa información
+                context_text = ""
+                if include_file_context and 'data_file' in st.session_state and st.session_state.data_file is not None:
+                    st.session_state.data_file.seek(0)
+                    context_text = st.session_state.data_file.read().decode("utf-8")
+                full_message = user_input + "\n\n" + context_text
+                chat_session = st.session_state['chat_session']
+                try:
+                    response = send_message_with_retry(chat_session, full_message, max_retries=3, delay=5)
+                    st.session_state['chat_history'].append({"user": user_input, "ai": response.text})
+                except google.api_core.exceptions.ResourceExhausted as e:
+                    st.error("Se ha excedido la cuota de la API de Gemini (error 429). Intente más tarde o revise su plan.")
+                except Exception as e:
+                    st.error(f"Ha ocurrido un error al enviar el mensaje: {e}")
+
+        if st.session_state.get('chat_history'):
+            st.markdown("### Historial de Conversación")
+            for exchange in st.session_state['chat_history']:
+                st.markdown(f"**Tú:** {exchange['user']}")
+                st.markdown(f"**AI:** {exchange['ai']}")
+
+# ------------------- Pestaña de Historial IA -------------------
+with tabs[2]:
+    st.subheader("Historial de Análisis de Gemini AI")
+    if 'first_analysis' in st.session_state:
+        st.markdown("#### Análisis Automático (Primer Análisis)")
+        st.markdown(st.session_state['first_analysis'], unsafe_allow_html=True)
+    else:
+        st.info("El Análisis Automático aún no ha sido ejecutado.")
+    st.markdown("---")
+    if 'second_analysis' in st.session_state:
+        st.markdown("#### Veredicto Final Integrado (Segundo Análisis)")
+        st.markdown(st.session_state['second_analysis'], unsafe_allow_html=True)
+    else:
+        st.info("El Veredicto Final Integrado aún no ha sido ejecutado.")
+
+# ------------------- Botón para Veredicto Final Integrado -------------------
+if gemini_enabled:
+    if st.button("Obtener Veredicto Final Integrado con Gemini AI", key="veredicto_button"):
+        if 'first_analysis' not in st.session_state:
+            st.error("Primero obtén el Análisis Automático en la pestaña de Análisis.")
+        else:
+            # Generar representación textual de los datos históricos
+            if 'pre_term_df' not in locals():
+                st.error("No hay datos en pre_term_df. Asegúrate de haber cargado el archivo y realizado el análisis previo.")
+            else:
+                retro_data_text = pre_term_df.to_csv(index=False)
+                sensor_info = ""
+                if sensor_master_df is not None:
+                    sensor_info = "Listado de sensores:\n"
+                    for idx, row in sensor_master_df.iterrows():
+                        property_id = str(row["Property ID in AVL packet"]).strip()
+                        sensor_tecnico = f"io_{property_id}"
+                        sensor_comun = row["Property Name"]
+                        unidades = row["Units"] if pd.notna(row["Units"]) and str(row["Units"]).strip() != "" else "N/A"
+                        descripcion = row["Description"]
+                        sensor_info += f"- {sensor_tecnico} | {sensor_comun} | {unidades} | {descripcion}\n"
+                else:
+                    sensor_info = "No se proporcionó información adicional de sensores."
+
+                # --- Prompt 2 Modificado (Veredicto Final Integrado - Estilo Sherlock Holmes) ---
+                prompt2 = f"""
+Instrucciones: Eres un analista experto en sistemas telemáticos y GPS, aplicando rigurosamente el método deductivo de Sherlock Holmes.
+
+**Información Adicional y Contexto (Importante):**
+{gps_info}
+
+Tu objetivo es generar un **"Veredicto Final Integrado" deductivo y fundamentado** sobre el comportamiento de una unidad GPS. Debes **combinar dos fuentes de información clave** (análisis previo y datos históricos) y aplicar un **razonamiento deductivo riguroso** para **eliminar hipótesis menos probables** y **reforzar la hipótesis más plausible** sobre la causa de la interrupción. Utiliza el método de Sherlock Holmes: **deducción lógica, eliminación de imposibilidades y verificación de la hipótesis principal.**
+
+**Manejo de Fechas y Horas:**
+- Cuando te refieras a fechas y horas, **NO uses timestamps numéricos**; utiliza un formato legible para humanos, por ejemplo: "25 de Octubre de 2024, 03:15 PM".
+- Todas las fechas y horas deben presentarse en la zona horaria **America/Mexico_City**.
+
+**Información para el Análisis Deductivo:**
+1. **Análisis Previo (Investigación Inicial):**
+{st.session_state['first_analysis']}
+
+2. **Datos Históricos del Período Retroactivo (últimos {retro_period} minutos - Evidencia Adicional):**
+{retro_data_text}
+
+**Tu tarea para el "Veredicto Final Integrado" deductivo es la siguiente:**
+
+1. **Resumen Conciso del Análisis Previo (Puntos Clave para la Deducción):**
+   Resume brevemente los puntos clave del análisis previo que son **más relevantes para la deducción**, especialmente:
+      - Las hipótesis **más probables** identificadas en el análisis previo (priorizadas según la evidencia inicial).
+      - Los sensores que mostraron **comportamiento anómalo o tendencias significativas** en el análisis previo (identificando los más "sospechosos").
+      - **Cualquier patrón temporal o evento específico** detectado en el análisis previo que pueda ser crucial para la deducción.
+
+2. **Descripción del Desarrollo del Comportamiento en el Período Retroactivo (Análisis Evolutivo Deductivo - Eliminación de Hipótesis):**
+   Para cada sensor **relevante y "sospechoso"** identificado en el análisis previo, describe:
+      - La **tendencia observada en los datos históricos del período retroactivo**: ¿se mantuvo constante, aumentó, disminuyó, fluctuó de manera errática o mostró algún patrón específico? Describe la tendencia con precisión.
+      - **Evalúa si las tendencias observadas en los datos históricos son consistentes o inconsistentes con cada una de las hipótesis planteadas en el análisis previo.** Sé específico:
+          * "¿Esta tendencia **refuerza** alguna hipótesis en particular? ¿Por qué?"
+          * "¿Esta tendencia **contradice** alguna hipótesis? ¿Cuál? ¿Por qué?"
+          * "¿Existen hipótesis que se vuelven **menos probables** a la luz de esta tendencia en los datos históricos? ¿Cuáles?"
+      - **Menciona fechas y horas específicas** (en formato "25 de Octubre de 2024, 03:15 PM") si se observan cambios significativos en las tendencias dentro del período retroactivo.
+      - **Conecta explícitamente cada tendencia observada con las hipótesis planteadas en el análisis previo, utilizando un razonamiento deductivo claro.**
+
+3. **Veredicto Final Integrado sobre el Comportamiento de la Unidad (Deducción y Conclusión):**
+   Emite un **veredicto final claro, conciso y deductivo**, basándote en la **combinación del análisis previo y los datos históricos**, y en el proceso de **eliminación de hipótesis menos probables**. Indica:
+      - **¿Cuál es la hipótesis más probable sobre la causa de la interrupción, basándote en la evidencia total? Justifica deductivamente tu conclusión.**
+      - ¿Se confirma una falla (interna o de conexión física/externa) y, si es posible, **determina cuándo ocurrió o comenzó a manifestarse** (fecha y hora en formato legible)?
+      - Si se identifica un problema potencial que **requiere mayor investigación para confirmar la hipótesis principal**, indica qué tipo de investigación adicional es necesaria y por qué.
+      - Si el comportamiento **parece ser normal a pesar de algunas anomalías**, explica por qué se llega a esta conclusión deductivamente, y si las anomalías pueden explicarse por factores externos o fallas en la conexión.
+      - Si **no es posible llegar a una conclusión definitiva** incluso con los datos históricos, indica por qué la evidencia no es concluyente y qué datos o información adicional se necesitan imperativamente para llegar a un veredicto deductivo.
+
+4. **Recomendaciones Específicas y Accionables (Verificación de la Hipótesis Principal - Plan de Acción Deductivo):**
+   Proporciona una lista de acciones concretas y **deductivamente orientadas** para **verificar el veredicto final y la hipótesis más probable**. Las recomendaciones deben ser específicas, accionables y diseñadas para proporcionar evidencia concluyente a favor o en contra de la hipótesis principal. Incluye:
+      - **Inspección física detallada y focalizada** de la unidad GPS, cables, conectores y antena, buscando evidencia que confirme o refute la hipótesis más probable.
+      - **Verificación específica** de la firmeza de las conexiones y búsqueda de cables dañados o sueltos en las áreas más relevantes según la hipótesis.
+      - **Pruebas de continuidad y resistencia** en los cables específicos (alimentación, antena, datos) que son más relevantes según la hipótesis.
+      - **Verificación focalizada** de la alimentación eléctrica en los puntos críticos identificados por la hipótesis.
+      - **Diagnóstico interno del GPS** (si es posible y directamente relevante para verificar la hipótesis principal).
+      - **Entrevista dirigida al operador** para detectar posibles incidentes o manipulaciones que sean relevantes para la hipótesis principal.
+      - **Cualquier otra acción específica y deductivamente justificada** que permita verificar o refutar la hipótesis más probable y llegar a una conclusión definitiva.
+
+**Información Adicional de Sensores:**
+{sensor_info}
+                """
+                if 'chat_session' not in st.session_state:
+                    st.session_state['chat_session'] = gemini_model.start_chat(history=[])
+                chat_session = st.session_state['chat_session']
+
+                try:
+                    response2 = send_message_with_retry(chat_session, prompt2, max_retries=3, delay=5)
+                    st.markdown("### Veredicto Final Integrado")
+                    st.markdown(response2.text, unsafe_allow_html=True)
+                    # Almacenar el segundo análisis en session_state para el Historial de IA
+                    st.session_state['second_analysis'] = response2.text
+                except google.api_core.exceptions.ResourceExhausted as e:
+                    st.error("Se ha excedido la cuota de la API de Gemini (error 429). Intente más tarde o revise su plan.")
+                except Exception as e:
+                    st.error(f"Ha ocurrido un error al enviar el mensaje: {e}")
