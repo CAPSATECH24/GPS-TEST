@@ -41,7 +41,7 @@ else:
 # ------------------------------------------------------
 # Función para reintentar el envío de mensajes
 # ------------------------------------------------------
-def send_message_with_retry(chat_session, message, max_retries=3, delay=5):
+def send_message_with_retry(chat_session, message, max_retries=3, delay=60):
     """
     Envía un mensaje a la API de Gemini con reintentos en caso de error 429 (ResourceExhausted).
     - chat_session: objeto de sesión de chat con la API.
@@ -735,7 +735,7 @@ Sigue esta estructura utilizando listas:
                 chat_session = st.session_state['chat_session']
 
                 try:
-                    response = send_message_with_retry(chat_session, prompt, max_retries=3, delay=5)
+                    response = send_message_with_retry(chat_session, prompt, max_retries=3, delay=60)
                     analysis_text = response.text
                     st.subheader("Análisis Automático de Gemini AI")
                     st.markdown(analysis_text, unsafe_allow_html=True)
@@ -775,7 +775,7 @@ with tabs[1]:
                 full_message = user_input + "\n\n" + context_text
                 chat_session = st.session_state['chat_session']
                 try:
-                    response = send_message_with_retry(chat_session, full_message, max_retries=3, delay=5)
+                    response = send_message_with_retry(chat_session, full_message, max_retries=3, delay=60)
                     st.session_state['chat_history'].append({"user": user_input, "ai": response.text})
                 except google.api_core.exceptions.ResourceExhausted as e:
                     st.error("Se ha excedido la cuota de la API de Gemini (error 429). Intente más tarde o revise su plan.")
@@ -891,7 +891,7 @@ Tu objetivo es generar un **"Veredicto Final Integrado" deductivo y fundamentado
                 chat_session = st.session_state['chat_session']
 
                 try:
-                    response2 = send_message_with_retry(chat_session, prompt2, max_retries=3, delay=5)
+                    response2 = send_message_with_retry(chat_session, prompt2, max_retries=3, delay=60)
                     st.markdown("### Veredicto Final Integrado")
                     st.markdown(response2.text, unsafe_allow_html=True)
                     # Almacenar el segundo análisis en session_state para el Historial de IA
