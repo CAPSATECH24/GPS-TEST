@@ -656,6 +656,10 @@ with tabs[0]:
             st.subheader("Datos")
             st.dataframe(df)
 
+        # ---- BOTÓN PARA DESCARGAR LOS DATOS TABULADOS ----
+        csv_data = df.to_csv(index=False).encode('utf-8')
+        st.download_button("Descargar datos en formato tabular (CSV)", csv_data, "datos_tabulados.csv", "text/csv", key='download-tabular-csv')
+
         # ----------------------- GEMINI AI - Análisis Inicial -----------------------
         if gemini_enabled:
             include_hypotheses = st.sidebar.checkbox("Incluir hipótesis de falla en el análisis", value=False)
@@ -749,9 +753,9 @@ Sigue esta estructura utilizando listas:
                 except Exception as e:
                     st.error(f"Ha ocurrido un error al enviar el mensaje: {e}")
 
-        csv_data = df.to_csv(index=False).encode('utf-8')
-        st.download_button("Descargar datos como CSV", csv_data, "datos_sensores.csv", "text/csv", key='download-csv')
-
+        # Al finalizar el análisis, se permite descargar la tabla completa de datos
+        # (Esta opción ya se muestra más arriba junto con el botón de descarga)
+        
 # ------------------- Pestaña de Conversación -------------------
 with tabs[1]:
     st.subheader("Conversación Iterativa con Gemini AI")
