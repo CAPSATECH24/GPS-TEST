@@ -54,14 +54,10 @@ def send_message_with_retry(chat_session, message, max_retries=3, delay=60):
             response = chat_session.send_message(message)
             return response
         except google.api_core.exceptions.ResourceExhausted as e:
-            # Error 429 o relacionado con límites de cuota
             st.warning(f"Recurso agotado (429). Reintentando en {delay} segundos... (intento {attempt+1}/{max_retries})")
             time.sleep(delay)
         except Exception as e:
-            # Otros errores, se propaga la excepción
             raise e
-
-    # Si se exceden los reintentos, lanzamos el error final
     raise google.api_core.exceptions.ResourceExhausted("Se ha agotado el número máximo de reintentos a la API de Gemini.")
 
 # ------------------------------------------------------
@@ -76,7 +72,7 @@ if master_file is not None:
     try:
         if file_name.endswith('.csv'):
             sensor_master_df = pd.read_csv(master_file)
-            sensor_master_df['Sheet'] = "CSV"  # Indicar que proviene de CSV
+            sensor_master_df['Sheet'] = "CSV"
         else:
             sheets_dict = pd.read_excel(master_file, sheet_name=None)
             sensor_master_df = pd.concat(
@@ -85,6 +81,10 @@ if master_file is not None:
             )
     except Exception as e:
         st.sidebar.error(f"Error al leer el archivo: {e}")
+    
+    # Almacenar el archivo en otra clave para la pestaña de conversación
+    if "master_file_obj" not in st.session_state:
+        st.session_state["master_file_obj"] = master_file
 
 required_cols = ["Property ID in AVL packet", "Property Name", "Units", "Description"]
 if sensor_master_df is not None:
@@ -490,6 +490,8 @@ with tabs[0]:
     st.title("Sensor Insights - Análisis del Corte de Reporte")
     uploaded_file = st.file_uploader("Carga un archivo de datos (TXT o WLN) de reportes", type=["txt", "wln"], key="data_file")
     if uploaded_file is not None:
+        if "data_file_obj" not in st.session_state:
+            st.session_state["data_file_obj"] = uploaded_file
         df = parse_reg_data(uploaded_file)
         if df.empty:
             st.error("No se pudieron procesar los datos del archivo. Verifica el formato.")
@@ -656,15 +658,12 @@ with tabs[0]:
             st.subheader("Datos")
             st.dataframe(df)
 
-        # ---- BOTÓN PARA DESCARGAR LOS DATOS TABULADOS ----
         csv_data = df.to_csv(index=False).encode('utf-8')
         st.download_button("Descargar datos en formato tabular (CSV)", csv_data, "datos_tabulados.csv", "text/csv", key='download-tabular-csv')
 
-        # ----------------------- GEMINI AI - Análisis Inicial -----------------------
         if gemini_enabled:
             include_hypotheses = st.sidebar.checkbox("Incluir hipótesis de falla en el análisis", value=False)
             if st.button("Obtener Análisis Automático con Gemini AI"):
-                # Se definen las variables gps_info y sensor_info para integrar en el prompt
                 sensor_info = ""
                 if sensor_master_df is not None:
                     sensor_info = "Listado de sensores:\n"
@@ -678,7 +677,6 @@ with tabs[0]:
                 else:
                     sensor_info = "No se proporcionó información adicional de sensores."
 
-                # --- Prompt 1 Modificado (Análisis Inicial - Estilo Sherlock Holmes) ---
                 prompt = f"""
 Eres un analista de datos experto en sistemas telemáticos y dispositivos GPS, aplicando el método deductivo de Sherlock Holmes.
 
@@ -737,13 +735,11 @@ Sigue esta estructura utilizando listas:
                 if 'chat_session' not in st.session_state:
                     st.session_state['chat_session'] = gemini_model.start_chat(history=[])
                 chat_session = st.session_state['chat_session']
-
                 try:
                     response = send_message_with_retry(chat_session, prompt, max_retries=3, delay=60)
                     analysis_text = response.text
                     st.subheader("Análisis Automático de Gemini AI")
                     st.markdown(analysis_text, unsafe_allow_html=True)
-                    # Almacenar el primer análisis en session_state para Historial IA
                     st.session_state['first_analysis'] = analysis_text
                     pdf_bytes = convert_markdown_to_pdf(analysis_text)
                     if pdf_bytes:
@@ -753,44 +749,65 @@ Sigue esta estructura utilizando listas:
                 except Exception as e:
                     st.error(f"Ha ocurrido un error al enviar el mensaje: {e}")
 
-        # Al finalizar el análisis, se permite descargar la tabla completa de datos
-        # (Esta opción ya se muestra más arriba junto con el botón de descarga)
-        
 # ------------------- Pestaña de Conversación -------------------
 with tabs[1]:
     st.subheader("Conversación Iterativa con Gemini AI")
-    st.info("Para iniciar la conversación, asegúrate de haber ejecutado ambos análisis (Análisis Automático y Veredicto Final Integrado).")
-    # Checkbox opcional para incluir el contexto histórico del archivo de reportes
-    include_file_context = st.checkbox("Incluir contexto histórico de datos del archivo subido en la conversación", value=False)
-    # Mostrar un mensaje si no se han ejecutado ambos análisis
-    if 'first_analysis' not in st.session_state or 'second_analysis' not in st.session_state:
-        st.warning("Aún no se han ejecutado ambos análisis. Ejecuta primero el Análisis Automático y luego el Veredicto Final Integrado para habilitar la conversación.")
-    else:
-        if 'chat_history' not in st.session_state:
-            st.session_state['chat_history'] = []
-        user_input = st.text_input("Escribe tu pregunta o comentario:", key="user_input")
-        if st.button("Enviar mensaje", key="send_button"):
-            if user_input:
-                # Si se seleccionó incluir el contexto histórico y se dispone del archivo, se agrega esa información
-                context_text = ""
-                if include_file_context and 'data_file' in st.session_state and st.session_state.data_file is not None:
-                    st.session_state.data_file.seek(0)
-                    context_text = st.session_state.data_file.read().decode("utf-8")
-                full_message = user_input + "\n\n" + context_text
-                chat_session = st.session_state['chat_session']
-                try:
-                    response = send_message_with_retry(chat_session, full_message, max_retries=3, delay=60)
-                    st.session_state['chat_history'].append({"user": user_input, "ai": response.text})
-                except google.api_core.exceptions.ResourceExhausted as e:
-                    st.error("Se ha excedido la cuota de la API de Gemini (error 429). Intente más tarde o revise su plan.")
-                except Exception as e:
-                    st.error(f"Ha ocurrido un error al enviar el mensaje: {e}")
 
-        if st.session_state.get('chat_history'):
-            st.markdown("### Historial de Conversación")
-            for exchange in st.session_state['chat_history']:
-                st.markdown(f"**Tú:** {exchange['user']}")
-                st.markdown(f"**AI:** {exchange['ai']}")
+    # Si existe el archivo de reportes, permitimos filtrar por fecha y hora de inicio y fecha y hora final
+    conv_context = ""
+    if "data_file_obj" in st.session_state:
+        st.session_state.data_file_obj.seek(0)
+        df_conv = parse_reg_data(st.session_state.data_file_obj)
+        if not df_conv.empty and "timestamp" in df_conv.columns:
+            df_conv['datetime'] = df_conv['timestamp'].apply(convert_timestamp)
+            # Seleccionar fecha y hora de inicio y fecha y hora final
+            conv_start_date = st.date_input("Fecha de inicio para filtrar mensajes", value=df_conv['datetime'].min().date(), key="conv_start_date")
+            conv_start_time = st.time_input("Hora de inicio", value=datetime.time(0,0), key="conv_start_time")
+            conv_end_date = st.date_input("Fecha final para filtrar mensajes", value=df_conv['datetime'].max().date(), key="conv_end_date")
+            conv_end_time = st.time_input("Hora final", value=datetime.time(23,59), key="conv_end_time")
+            # Combinar la fecha y la hora en datetime
+            conv_start_datetime = datetime.datetime.combine(conv_start_date, conv_start_time)
+            conv_end_datetime = datetime.datetime.combine(conv_end_date, conv_end_time)
+            # Filtrar el DataFrame
+            df_conv = df_conv[(df_conv['datetime'] >= conv_start_datetime) & (df_conv['datetime'] <= conv_end_datetime)]
+            # Crear una columna con la fecha formateada (ejemplo: "25 de Octubre de 2024, 03:15:30 PM")
+            df_conv["fecha_formateada"] = df_conv['datetime'].apply(lambda dt: dt.strftime("%d de %B de %Y, %I:%M:%S %p"))
+            # Eliminar columnas que contengan timestamps numéricos para no enviarlas al prompt
+            df_conv_context = df_conv.drop(columns=["timestamp", "datetime"], errors='ignore')
+            conv_context = "Datos de Reporte (filtrados):\n" + df_conv_context.to_csv(index=False) + "\n"
+
+    # Incluir instrucción para manejo de fechas y horas en el contexto
+    extra_context = ("Manejo de Fechas y Horas:\n"
+                     "- Cuando te refieras a fechas y horas, **NO uses timestamps numéricos**; utiliza un formato legible para humanos, por ejemplo: \"25 de Octubre de 2024, 03:15:30 PM\".\n"
+                     "- Todas las fechas y horas deben presentarse en la zona horaria **America/Mexico_City**.\n\n")
+    # Checkbox para incluir el contexto de los documentos
+    include_file_context = st.checkbox("Incluir contexto del Sensor Master List y Datos de Reporte en la conversación", value=True)
+    if 'chat_history' not in st.session_state:
+        st.session_state['chat_history'] = []
+    user_input = st.text_input("Escribe tu pregunta o comentario:", key="user_input")
+    if st.button("Enviar mensaje", key="send_button"):
+        if user_input:
+            context_text = extra_context
+            if include_file_context:
+                if "master_file_obj" in st.session_state and sensor_master_df is not None:
+                    context_text += "Sensor Master List:\n" + sensor_master_df.to_csv(index=False) + "\n"
+                context_text += conv_context
+            full_message = user_input + "\n\n" + context_text
+            if 'chat_session' not in st.session_state:
+                st.session_state['chat_session'] = gemini_model.start_chat(history=[])
+            chat_session = st.session_state['chat_session']
+            try:
+                response = send_message_with_retry(chat_session, full_message, max_retries=3, delay=60)
+                st.session_state['chat_history'].append({"user": user_input, "ai": response.text})
+            except google.api_core.exceptions.ResourceExhausted as e:
+                st.error("Se ha excedido la cuota de la API de Gemini (error 429). Intente más tarde o revise su plan.")
+            except Exception as e:
+                st.error(f"Ha ocurrido un error al enviar el mensaje: {e}")
+    if st.session_state.get('chat_history'):
+        st.markdown("### Historial de Conversación")
+        for exchange in st.session_state['chat_history']:
+            st.markdown(f"**Tú:** {exchange['user']}")
+            st.markdown(f"**AI:** {exchange['ai']}")
 
 # ------------------- Pestaña de Historial IA -------------------
 with tabs[2]:
@@ -807,13 +824,11 @@ with tabs[2]:
     else:
         st.info("El Veredicto Final Integrado aún no ha sido ejecutado.")
 
-# ------------------- Botón para Veredicto Final Integrado -------------------
 if gemini_enabled:
     if st.button("Obtener Veredicto Final Integrado con Gemini AI", key="veredicto_button"):
         if 'first_analysis' not in st.session_state:
             st.error("Primero obtén el Análisis Automático en la pestaña de Análisis.")
         else:
-            # Generar representación textual de los datos históricos
             if 'pre_term_df' not in locals():
                 st.error("No hay datos en pre_term_df. Asegúrate de haber cargado el archivo y realizado el análisis previo.")
             else:
@@ -831,7 +846,6 @@ if gemini_enabled:
                 else:
                     sensor_info = "No se proporcionó información adicional de sensores."
 
-                # --- Prompt 2 Modificado (Veredicto Final Integrado - Estilo Sherlock Holmes) ---
                 prompt2 = f"""
 Instrucciones: Eres un analista experto en sistemas telemáticos y GPS, aplicando rigurosamente el método deductivo de Sherlock Holmes.
 
@@ -893,12 +907,10 @@ Tu objetivo es generar un **"Veredicto Final Integrado" deductivo y fundamentado
                 if 'chat_session' not in st.session_state:
                     st.session_state['chat_session'] = gemini_model.start_chat(history=[])
                 chat_session = st.session_state['chat_session']
-
                 try:
                     response2 = send_message_with_retry(chat_session, prompt2, max_retries=3, delay=60)
                     st.markdown("### Veredicto Final Integrado")
                     st.markdown(response2.text, unsafe_allow_html=True)
-                    # Almacenar el segundo análisis en session_state para el Historial de IA
                     st.session_state['second_analysis'] = response2.text
                 except google.api_core.exceptions.ResourceExhausted as e:
                     st.error("Se ha excedido la cuota de la API de Gemini (error 429). Intente más tarde o revise su plan.")
