@@ -777,7 +777,7 @@ with tabs[1]:
             conv_context = "Datos de Reporte (filtrados):\n" + df_conv_context.to_csv(index=False) + "\n"
 
     # Incluir instrucción para manejo de fechas y horas en el contexto
-    extra_context = ("Manejo de Fechas y Horas:\n"
+    extra_context = ("***REGLAS DE MANEJO DE FECHAS Y HORAS INVETIABLES***:\n"
                      "- Cuando te refieras a fechas y horas, **NO uses timestamps numéricos**; utiliza un formato legible para humanos, por ejemplo: \"25 de Octubre de 2024, 03:15:30 PM\".\n"
                      "- Todas las fechas y horas deben presentarse en la zona horaria **America/Mexico_City**.\n\n")
     # Checkbox para incluir el contexto de los documentos
