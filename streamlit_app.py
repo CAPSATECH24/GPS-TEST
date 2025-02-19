@@ -725,10 +725,6 @@ Sigue esta estructura utilizando listas:
         * Diagnóstico interno del GPS **si es posible y relevante para las hipótesis.**
         * **Recopilación de información adicional relevante del contexto operativo** (ej: condiciones ambientales recientes, historial de la unidad, reportes de operadores).
 
-5. **Análisis de Tendencias (Opcional y Avanzado - Patrones Temporales):**
-   - Indica si existen **patrones recurrentes en el *tiempo*** (diarios, semanales, etc.) relacionados con las anomalías o comportamientos inusuales observados.
-     **Considera si estos patrones temporales podrían estar relacionados con factores externos (ej: interferencia en ciertos momentos del día) o problemas de conexión intermitentes (ej: falsos contactos que varían con la vibración o temperatura).** Si se detectan patrones, descríbelos con precisión y propone posibles explicaciones basadas en estos patrones.
-
 **Información Adicional de Sensores:**
 {sensor_info}
                 """
@@ -759,36 +755,41 @@ with tabs[1]:
         if 'chat_session' in st.session_state:
             del st.session_state['chat_session']
         st.success("Historial de conversación borrado.")
-
-    # Si existe el archivo de reportes, permitimos filtrar por fecha y hora de inicio y fecha y hora final
+    
+    # Si existe el archivo de reportes, permitimos filtrar por fecha y hora
     conv_context = ""
     if "data_file_obj" in st.session_state:
         st.session_state.data_file_obj.seek(0)
         df_conv = parse_reg_data(st.session_state.data_file_obj)
         if not df_conv.empty and "timestamp" in df_conv.columns:
             df_conv['datetime'] = df_conv['timestamp'].apply(convert_timestamp)
-            # Seleccionar fecha y hora de inicio y fecha y hora final
             conv_start_date = st.date_input("Fecha de inicio para filtrar mensajes", value=df_conv['datetime'].min().date(), key="conv_start_date")
             conv_start_time = st.time_input("Hora de inicio", value=datetime.time(0,0), key="conv_start_time")
             conv_end_date = st.date_input("Fecha final para filtrar mensajes", value=df_conv['datetime'].max().date(), key="conv_end_date")
             conv_end_time = st.time_input("Hora final", value=datetime.time(23,59), key="conv_end_time")
-            # Combinar la fecha y la hora en datetime
             conv_start_datetime = datetime.datetime.combine(conv_start_date, conv_start_time)
             conv_end_datetime = datetime.datetime.combine(conv_end_date, conv_end_time)
-            # Filtrar el DataFrame
             df_conv = df_conv[(df_conv['datetime'] >= conv_start_datetime) & (df_conv['datetime'] <= conv_end_datetime)]
-            # Crear una columna con la fecha formateada (ejemplo: "25 de Octubre de 2024, 03:15:30 PM")
+            # Crear una columna con la fecha formateada para mostrar
             df_conv["fecha_formateada"] = df_conv['datetime'].apply(lambda dt: dt.strftime("%d de %B de %Y, %I:%M:%S %p"))
-            # Eliminar columnas que contengan timestamps numéricos para no enviarlas al prompt
+            # Eliminar columnas con timestamps y datetime para no incluir datos numéricos
             df_conv_context = df_conv.drop(columns=["timestamp", "datetime"], errors='ignore')
+            # Renombrar la columna de fecha formateada para claridad
+            if "fecha_formateada" in df_conv_context.columns:
+                df_conv_context = df_conv_context.rename(columns={"fecha_formateada": "Fecha y Hora"})
             conv_context = "Datos de Reporte (filtrados):\n" + df_conv_context.to_csv(index=False) + "\n"
 
-    # Incluir instrucción para manejo de fechas y horas en el contexto
+    # Instrucciones generales para el manejo de fechas y horas
     extra_context = ("***REGLAS DE MANEJO DE FECHAS Y HORAS INVETIABLES***:\n"
                      "- Cuando te refieras a fechas y horas, **NO uses timestamps numéricos**; utiliza un formato legible para humanos, por ejemplo: \"25 de Octubre de 2024, 03:15:30 PM\".\n"
                      "- Todas las fechas y horas deben presentarse en la zona horaria **America/Mexico_City**.\n\n")
-    # Checkbox para incluir el contexto de los documentos
+    
+    # Checkbox para incluir el contexto del Sensor Master List y Datos de Reporte
     include_file_context = st.checkbox("Incluir contexto del Sensor Master List y Datos de Reporte en la conversación", value=True)
+    
+    # Nuevo: Checkbox para activar el modo "Sherlock Holmes"
+    sherlock_mode = st.checkbox("Activar modo Sherlock Holmes", value=True)
+    
     if 'chat_history' not in st.session_state:
         st.session_state['chat_history'] = []
     user_input = st.text_input("Escribe tu pregunta o comentario:", key="user_input")
@@ -799,7 +800,12 @@ with tabs[1]:
                 if "master_file_obj" in st.session_state and sensor_master_df is not None:
                     context_text += "Sensor Master List:\n" + sensor_master_df.to_csv(index=False) + "\n"
                 context_text += conv_context
+            # Si el checkbox de modo Sherlock está activo, se añaden las instrucciones correspondientes
+            if sherlock_mode:
+                context_text += "\nActúa como Sherlock Holmes, utilizando su método de deducción, observación aguda y razonamiento lógico para resolver la solicitud del usuario."
+            
             full_message = user_input + "\n\n" + context_text
+            
             if 'chat_session' not in st.session_state:
                 st.session_state['chat_session'] = gemini_model.start_chat(history=[])
             chat_session = st.session_state['chat_session']
