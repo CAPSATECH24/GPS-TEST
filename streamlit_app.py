@@ -31,7 +31,7 @@ if gemini_api_key:
         "response_mime_type": "text/plain",
     }
     gemini_model = genai.GenerativeModel(
-        model_name="gemini-2.0-flash",
+        model_name="gemini-2.0-flash-thinking-exp-01-21",
         generation_config=generation_config,
     )
     gemini_enabled = True
@@ -752,6 +752,13 @@ Sigue esta estructura utilizando listas:
 # ------------------- Pestaña de Conversación -------------------
 with tabs[1]:
     st.subheader("Conversación Iterativa con Gemini AI")
+    
+    # Botón para borrar el historial de conversación y reiniciar la sesión
+    if st.button("Borrar Historial de Conversación"):
+        st.session_state['chat_history'] = []
+        if 'chat_session' in st.session_state:
+            del st.session_state['chat_session']
+        st.success("Historial de conversación borrado.")
 
     # Si existe el archivo de reportes, permitimos filtrar por fecha y hora de inicio y fecha y hora final
     conv_context = ""
